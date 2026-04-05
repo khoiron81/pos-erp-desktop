@@ -1,0 +1,27 @@
+{
+    "name": "POS ERP UMKM - Material Store",
+    "short_name": "POS UMKM",
+    "description": "Sistem POS & ERP untuk Toko Material Bangunan",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0f172a",
+    "theme_color": "#3b82f6",
+    "orientation": "any",
+    "icons": [
+        {
+            "src": "/icons/icon-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icons/icon-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ],
+    "categories": [
+        "business",
+        "finance",
+        "shopping"
+    ]
+}
