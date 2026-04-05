@@ -100,6 +100,7 @@ export class PrinterManager {
                     printBackground: true,
                     deviceName: data.printerName || undefined,
                     margins: { marginType: 'none' },
+                    scaleFactor: 100,
                     pageSize: {
                         width: Math.round(totalWidthMm * 1000), // microns
                         height: Math.round(data.labelHeightMm * 1000),
@@ -107,6 +108,7 @@ export class PrinterManager {
                 },
                 (success, failureReason) => {
                     printWindow.close();
+                    console.log(`[PrinterManager] Label print result: ${success ? 'OK' : failureReason}`);
                     if (success) {
                         resolve();
                     } else {

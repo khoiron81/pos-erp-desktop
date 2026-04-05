@@ -7,10 +7,14 @@ Phone: 08112638350
 Website: https://aktech.co.id
 */
 
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as url from 'url';
 import { initSettingsStore, getSettings, setSettings } from './store/settings-store';
 import { PrinterManager } from './printer/printer-manager';
+import { sendRawToPrinter } from './printer/raw-printer';
+import { pngToZPL } from './printer/png-to-zpl';
 import { initAutoUpdater } from './updater/auto-updater';
 import { initTray } from './tray/tray-manager';
 
@@ -21,6 +25,19 @@ const isDev = !app.isPackaged;
 const RENDERER_PATH = isDev
     ? path.join(__dirname, '..', '..', 'renderer')
     : path.join(process.resourcesPath, 'renderer');
+
+// Register custom protocol scheme (must be done before app is ready)
+protocol.registerSchemesAsPrivileged([
+    {
+        scheme: 'app',
+        privileges: {
+            standard: true,
+            secure: true,
+            supportFetchAPI: true,
+            corsEnabled: true,
+        },
+    },
+]);
 
 // ============================================
 // WINDOW CREATION
@@ -41,14 +58,47 @@ function createMainWindow(): void {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
+            webSecurity: false,
         },
         autoHideMenuBar: true,
         show: false,
     });
 
-    // Load the static export
-    const indexPath = path.join(RENDERER_PATH, 'index.html');
-    mainWindow.loadFile(indexPath);
+    // Load the static export via custom protocol
+    mainWindow.loadURL('app://./index.html');
+
+    // Inject Electron Printer Bridge to bypass QZ Tray
+    // Must inject BEFORE any webpack chunks load, so use 'did-navigate'
+    const bridgePath = path.join(RENDERER_PATH, 'electron-printer-bridge.js');
+    let bridgeScript = '';
+    if (fs.existsSync(bridgePath)) {
+        bridgeScript = fs.readFileSync(bridgePath, 'utf8');
+    }
+
+    mainWindow.webContents.on('did-navigate', () => {
+        if (bridgeScript) {
+            mainWindow?.webContents.executeJavaScript(bridgeScript)
+                .catch((err: any) => console.error('Bridge injection error:', err));
+        }
+    });
+
+    // Also inject on dom-ready as fallback
+    mainWindow.webContents.on('dom-ready', () => {
+        if (bridgeScript) {
+            mainWindow?.webContents.executeJavaScript(`
+                if (!window.qz || !window.qz.__electronBridge) {
+                    ${bridgeScript}
+                }
+            `).catch((err: any) => console.error('Bridge fallback injection error:', err));
+        }
+    });
+
+    // Forward renderer console messages to main process for debugging
+    mainWindow.webContents.on('console-message', (_event, level, message) => {
+        if (message.includes('[Bridge]') || message.includes('[ZPL]')) {
+            console.log(`[Renderer] ${message}`);
+        }
+    });
 
     // Show when ready
     mainWindow.once('ready-to-show', () => {
@@ -104,25 +154,136 @@ function registerIPCHandlers(): void {
     });
 
     ipcMain.handle('print:receipt', async (_event, data) => {
-        if (!mainWindow || !printerManager) {
+        if (!mainWindow) {
             return { success: false, error: 'Window not available' };
         }
         try {
-            await printerManager.printReceipt(mainWindow, data);
-            return { success: true };
+            if (data.isRaw && data.rawData) {
+                // Raw ESC/POS data — send directly to printer via Win32 Spooler
+                await sendRawToPrinter(data.printerName, data.rawData, 'RAW');
+                return { success: true };
+            } else if (printerManager) {
+                // Structured ReceiptData — use the PrinterManager
+                await printerManager.printReceipt(mainWindow, data);
+                return { success: true };
+            }
+            return { success: false, error: 'No print handler available' };
         } catch (err: any) {
+            console.error('print:receipt error:', err);
             return { success: false, error: err.message };
         }
     });
 
     ipcMain.handle('print:label', async (_event, data) => {
-        if (!mainWindow || !printerManager) {
+        if (!mainWindow) {
             return { success: false, error: 'Window not available' };
         }
         try {
-            await printerManager.printLabel(mainWindow, data);
-            return { success: true };
+            if (data.isRaw && data.imageData) {
+                // Check if this is a base64 PNG image or raw ZPL/ESC-POS text
+                const isImageData = !data.imageData.startsWith('^XA') && !data.imageData.startsWith('\x1b');
+
+                if (isImageData) {
+                    const labelWidthMm = data.labelWidthMm || 103;
+                    const labelHeightMm = data.labelHeightMm || 15;
+                    const isZebra = data.printerName.toLowerCase().includes('zebra') ||
+                                    data.printerName.toLowerCase().includes('zd') ||
+                                    data.printerName.toLowerCase().includes('zdesigner');
+
+                    if (isZebra) {
+                        // Zebra printer: Convert PNG → ZPL ^GFA and send raw
+                        const sourceIsAtPrinterDpi = data.sourceIsAtPrinterDpi || false;
+                        console.log(`[print:label] PNG→ZPL mode → ${labelWidthMm}x${labelHeightMm}mm to ${data.printerName} (sourceAtDpi=${sourceIsAtPrinterDpi})`);
+                        const zplData = pngToZPL(data.imageData, labelWidthMm, labelHeightMm, sourceIsAtPrinterDpi);
+                        await sendRawToPrinter(data.printerName, zplData, 'RAW');
+                        return { success: true };
+                    } else {
+                        // Non-Zebra: render image and print via driver
+                        // Use higher DPI conversion for print-quality rendering
+                        const DPI = 203; // Label printers typically 203 DPI
+                        const pxWidth = Math.round(labelWidthMm / 25.4 * DPI);
+                        const pxHeight = Math.round(labelHeightMm / 25.4 * DPI);
+                        console.log(`[print:label] Image mode → ${labelWidthMm}x${labelHeightMm}mm (${pxWidth}x${pxHeight}px @${DPI}dpi) to ${data.printerName}`);
+
+                        const printWindow = new BrowserWindow({
+                            show: false,
+                            width: pxWidth,
+                            height: pxHeight,
+                            parent: mainWindow,
+                            webPreferences: { contextIsolation: true, nodeIntegration: false },
+                        });
+
+                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+                            <style>
+                                @page {
+                                    size: ${labelWidthMm}mm ${labelHeightMm}mm;
+                                    margin: 0 !important;
+                                }
+                                @media print {
+                                    html, body {
+                                        width: ${labelWidthMm}mm !important;
+                                        height: ${labelHeightMm}mm !important;
+                                        margin: 0 !important;
+                                        padding: 0 !important;
+                                        overflow: hidden !important;
+                                    }
+                                }
+                                * { margin: 0; padding: 0; box-sizing: border-box; }
+                                html, body {
+                                    background: #fff;
+                                    width: ${labelWidthMm}mm;
+                                    height: ${labelHeightMm}mm;
+                                    overflow: hidden;
+                                }
+                                img {
+                                    display: block;
+                                    width: ${labelWidthMm}mm;
+                                    height: ${labelHeightMm}mm;
+                                    object-fit: fill;
+                                }
+                            </style>
+                            </head><body><img src="data:image/png;base64,${data.imageData}"></body></html>`;
+
+                        await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+                        await new Promise(r => setTimeout(r, 800));
+
+                        return new Promise((resolve) => {
+                            printWindow.webContents.print(
+                                {
+                                    silent: true,
+                                    printBackground: true,
+                                    deviceName: data.printerName || undefined,
+                                    margins: { marginType: 'none' },
+                                    scaleFactor: 100,
+                                    pageSize: {
+                                        width: labelWidthMm * 1000,
+                                        height: labelHeightMm * 1000,
+                                    },
+                                },
+                                (success, failureReason) => {
+                                    printWindow.close();
+                                    console.log(`[print:label] Print result: ${success ? 'OK' : failureReason}`);
+                                    resolve(success
+                                        ? { success: true }
+                                        : { success: false, error: failureReason || 'Label print failed' });
+                                }
+                            );
+                        });
+                    }
+                } else {
+                    // Raw ZPL/ESC-POS text — send directly via Win32 Spooler
+                    console.log('[print:label] Raw mode → Win32 spooler to', data.printerName);
+                    await sendRawToPrinter(data.printerName, data.imageData, 'RAW');
+                    return { success: true };
+                }
+            } else if (printerManager) {
+                // Structured LabelPrintData — use the PrinterManager
+                await printerManager.printLabel(mainWindow, data);
+                return { success: true };
+            }
+            return { success: false, error: 'No print handler available' };
         } catch (err: any) {
+            console.error('print:label error:', err);
             return { success: false, error: err.message };
         }
     });
@@ -200,6 +361,42 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+    // Register custom protocol to serve renderer files
+    // This allows absolute paths like /_next/static/... to work correctly
+    protocol.handle('app', (request) => {
+        const requestUrl = new URL(request.url);
+        let filePath = decodeURIComponent(requestUrl.pathname);
+        
+        // Remove leading slash on Windows
+        if (filePath.startsWith('/')) {
+            filePath = filePath.substring(1);
+        }
+        
+        // Default to index.html
+        if (!filePath || filePath === '') {
+            filePath = 'index.html';
+        }
+        
+        const fullPath = path.join(RENDERER_PATH, filePath);
+        
+        // Check if file exists
+        if (fs.existsSync(fullPath)) {
+            return net.fetch(url.pathToFileURL(fullPath).toString());
+        }
+        
+        // If no extension, try .html
+        if (!path.extname(filePath)) {
+            const htmlPath = fullPath + '.html';
+            if (fs.existsSync(htmlPath)) {
+                return net.fetch(url.pathToFileURL(htmlPath).toString());
+            }
+        }
+        
+        // Fallback to index.html for SPA routing
+        const indexPath = path.join(RENDERER_PATH, 'index.html');
+        return net.fetch(url.pathToFileURL(indexPath).toString());
+    });
+
     // Initialize
     initSettingsStore();
     registerIPCHandlers();

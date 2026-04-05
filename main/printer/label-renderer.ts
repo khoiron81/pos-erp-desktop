@@ -39,9 +39,9 @@ export function renderLabelHTML(data: LabelPrintData): string {
         rowsHTML += `</div>\n`;
     }
 
-    const nameFontSize = isSmall ? 7 : 10;
-    const priceFontSize = isSmall ? 6 : 9;
-    const barcodeHeight = isSmall ? 20 : 35;
+    const nameFontSize = isSmall ? 8 : 10;
+    const priceFontSize = isSmall ? 7 : 9;
+    const barcodeHeight = isSmall ? 25 : 35;
 
     return `<!DOCTYPE html>
 <html>
@@ -51,7 +51,16 @@ export function renderLabelHTML(data: LabelPrintData): string {
 <style>
 @page {
     size: ${totalWidthMm}mm ${data.labelHeightMm}mm;
-    margin: 0;
+    margin: 0 !important;
+}
+@media print {
+    html, body {
+        width: ${totalWidthMm}mm !important;
+        height: auto !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        -webkit-print-color-adjust: exact;
+    }
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -67,6 +76,7 @@ body {
     width: ${totalWidthMm}mm;
     height: ${data.labelHeightMm}mm;
     page-break-after: always;
+    page-break-inside: avoid;
 }
 .label-cell {
     display: flex;
@@ -74,7 +84,7 @@ body {
     align-items: center;
     justify-content: center;
     overflow: hidden;
-    padding: 0.5mm;
+    padding: 0.5mm 0.3mm;
 }
 .gap {
     flex-shrink: 0;
@@ -83,8 +93,8 @@ body {
     font-size: ${nameFontSize}pt;
     font-weight: bold;
     text-align: center;
-    line-height: 1.1;
-    max-height: ${isSmall ? 4 : 5}mm;
+    line-height: 1.15;
+    max-height: ${isSmall ? 4.5 : 5.5}mm;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
