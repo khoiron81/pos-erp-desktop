@@ -1,0 +1,10 @@
+node_modules/
+dist/
+release/
+renderer/_next/
+renderer/*.html
+renderer/*.txt
+renderer/*.ico
+renderer/*.json
+renderer/fonts/
+*.DS_Store

@@ -1,0 +1,31 @@
+{
+  "name": "pos-erp-umkm-desktop",
+  "version": "1.0.0",
+  "description": "POS ERP UMKM - Material Store Edition (Desktop)",
+  "author": "PT. Aktech Digital Solutions <info@aktech.co.id>",
+  "license": "PROPRIETARY",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.json && electron dist/main/main.js",
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "cd ../frontend && NEXT_PUBLIC_DESKTOP=true npx next build",
+    "copy:renderer": "rm -rf renderer/* && cp -r ../frontend/out/* renderer/",
+    "build:all": "npm run build:renderer && npm run copy:renderer && npm run build:main",
+    "pack": "npm run build:all && electron-builder --dir",
+    "dist": "npm run build:all && electron-builder --win",
+    "dist:publish": "npm run build:all && electron-builder --win --publish always"
+  },
+  "dependencies": {
+    "electron-store": "^10.0.0",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.0"
+  },
+  "build": {
+    "extends": "electron-builder.yml"
+  }
+}

@@ -1,0 +1,38 @@
+appId: co.id.aktech.pos-erp
+productName: POS ERP UMKM
+copyright: Copyright © 2026 PT. Aktech Digital Solutions
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - dist/**/*
+  - renderer/**/*
+  - "!node_modules/**/*"
+  - node_modules/electron-store/**/*
+  - node_modules/electron-updater/**/*
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+  artifactName: POS-ERP-UMKM-${version}-Setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  shortcutName: POS ERP UMKM
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+
+publish:
+  provider: github
+  owner: AktechDigitalSolutions
+  repo: pos-erp-desktop
+  releaseType: release
