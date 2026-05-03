@@ -13,7 +13,23 @@
     console.log('[Bridge] Initializing Electron Printer Bridge...');
 
     // ── Helpers ───────────────────────────────────────────────
-    function getLabelConfig() {
+    // Reads from encrypted electron-store (canonical settings), falls back to localStorage
+    async function getLabelConfig() {
+        try {
+            const settings = await window.electronAPI.getSettings();
+            if (settings) {
+                const sizeParts = (settings.label_size || '33x15').split('x').map(Number);
+                return {
+                    label_size_width:  sizeParts[0] || 33,
+                    label_size_height: sizeParts[1] || 15,
+                    label_columns:     settings.label_columns  || 3,
+                    label_show_price:  settings.label_show_price  !== false,
+                    label_show_barcode: settings.label_show_barcode !== false,
+                };
+            }
+        } catch (e) {
+            console.warn('[Bridge] getSettings failed, falling back to localStorage:', e);
+        }
         try {
             const raw = localStorage.getItem('pos_printer_mapping');
             if (raw) return JSON.parse(raw);
@@ -33,8 +49,6 @@
     }
 
     // ── Store last print request for ZPL generation ──────────
-    // The print dialog's onClick stores product info here before
-    // calling printMultiColumnLabel, which eventually reaches qz.print().
     window.__lastLabelPrintRequest = null;
 
     // ── Native ZPL generator ─────────────────────────────────
@@ -52,22 +66,19 @@
         const gapD   = Math.round(gapMm / 25.4 * DPI);
         const totalW = cellW * cols + gapD * (cols - 1);
 
-        // ── Layout: Product Name + Barcode + Code Number ──
-        // Bottom-aligned: calculate positions from bottom up
+        // Layout: Product Name + Barcode + Code Number (bottom-aligned)
         const nameFontH  = Math.min(22, Math.round(cellH * 0.18));
         const nameFontW  = Math.round(nameFontH * 0.85);
-        const bcHeight   = Math.round(cellH * 0.52);    // barcode bars
-        const bcCodeFontH = 18;                          // code number font height
-        const bcCodeFontW = 14;                          // code number font width
-        const bottomPad  = 1;                            // bottom padding
-        const nameGap    = 2;                            // gap between name and barcode
+        const bcHeight   = Math.round(cellH * 0.52);
+        const bcCodeFontH = 18;
+        const bcCodeFontW = 14;
+        const bottomPad  = 1;
+        const nameGap    = 2;
 
-        // Calculate Y positions from bottom
-        const bcCodeH = bcCodeFontH + 2;                 // code number area
-        const bcY     = cellH - bcHeight - bcCodeH - bottomPad;  // barcode start
-        const nameY   = bcY - nameFontH - nameGap;       // name start
+        const bcCodeH = bcCodeFontH + 2;
+        const bcY     = cellH - bcHeight - bcCodeH - bottomPad;
+        const nameY   = bcY - nameFontH - nameGap;
 
-        // Truncate product name to fit cell width
         const maxChars = widthMm <= 35 ? 20 : 28;
         let prodName = labelData.productName || '';
         if (prodName.length > maxChars) {
@@ -83,13 +94,11 @@
             for (let col = 0; col < cols; col++) {
                 const xOff = col * (cellW + gapD);
 
-                // 1) Product name — centered above barcode
                 zpl += '^FO' + xOff + ',' + nameY;
                 zpl += '^A0N,' + nameFontH + ',' + nameFontW;
                 zpl += '^FB' + cellW + ',1,0,C';
                 zpl += '^FD' + prodName + '^FS\n';
 
-                // 2) Barcode bars — fixed 35-dot margin from cell edge
                 const barcodeStr = labelData.barcode || '';
                 const bcXOff = xOff + 35;
                 zpl += '^FO' + bcXOff + ',' + bcY;
@@ -97,7 +106,6 @@
                 zpl += '^BCN,' + bcHeight + ',N,N,N\n';
                 zpl += '^FD' + barcodeStr + '^FS\n';
 
-                // 3) Code number text — centered below barcode
                 const codeY = bcY + bcHeight + 2;
                 zpl += '^FO' + xOff + ',' + codeY;
                 zpl += '^A0N,' + bcCodeFontH + ',' + bcCodeFontW;
@@ -108,7 +116,7 @@
             zpl += '^XZ\n';
         }
 
-        console.log('[ZPL] ' + qty + '×' + cols + ', cell=' + cellW + '×' + cellH +
+        console.log('[ZPL] ' + qty + 'x' + cols + ', cell=' + cellW + 'x' + cellH +
                     ', nameH=' + nameFontH + ', bcH=' + bcHeight);
         return zpl;
     }
@@ -116,26 +124,18 @@
     // ── Try to extract product info from the print dialog DOM ──
     function extractProductFromDOM() {
         try {
-            // The barcode print dialog has a product info section with:
-            // - Product name (font-semibold in bg-gray-50 section)
-            // - Price (text-blue-600)
-            // - Barcode text (from canvas or text elements)
             const dialog = document.querySelector('.fixed.inset-0.z-50');
             if (!dialog) return null;
 
-            // Find product info section
             const infoSection = dialog.querySelector('.bg-gray-50, [class*="bg-gray-50"]');
             if (!infoSection) return null;
 
-            // Get product name
             const nameEl = infoSection.querySelector('.font-semibold, p.font-semibold');
             const name = nameEl ? nameEl.textContent.trim() : '';
 
-            // Get price (blue text)
             const priceEl = infoSection.querySelector('.text-blue-600, [class*="text-blue-600"]');
             const price = priceEl ? priceEl.textContent.trim() : '';
 
-            // Get barcode value - look for "Barcode: XXX" text
             const spans = infoSection.querySelectorAll('span');
             let barcode = '';
             for (const span of spans) {
@@ -188,12 +188,13 @@
         },
         print: async (config, data) => {
             const printerName = config.printerName;
-            const lc = getLabelConfig();
-            console.log('[Bridge] qz.print →', printerName, 'items:', data.length);
+            // Always fetch fresh settings from electron-store
+            const lc = await getLabelConfig();
+            console.log('[Bridge] qz.print ->', printerName, 'items:', data.length);
 
             for (const item of data) {
                 if (item.type === 'raw' && item.format === 'plain') {
-                    // ── Raw text (ESC/POS or ZPL) → spooler ──
+                    // Raw text (ESC/POS or ZPL) → spooler via printReceipt
                     const result = await window.electronAPI.printReceipt({
                         rawData:     item.data,
                         printerName: printerName,
@@ -203,16 +204,14 @@
                     if (!result.success) throw new Error(result.error || 'Print failed');
 
                 } else if (item.type === 'raw' && (item.format === 'image' || item.format === 'base64')) {
-                    // ── Image from canvas ──
-                    // For Zebra printers, try to generate native ZPL instead
+                    // Image from canvas
                     if (isZebraPrinter(printerName)) {
-                        // Try to get product data from stored request or DOM
                         const stored = window.__lastLabelPrintRequest;
                         const fromDOM = extractProductFromDOM();
                         const productInfo = stored || fromDOM;
 
                         if (productInfo && productInfo.barcode) {
-                            console.log('[Bridge] Zebra detected → native ZPL (data from ' + (stored ? 'stored' : 'DOM') + ')');
+                            console.log('[Bridge] Zebra detected -> native ZPL (data from ' + (stored ? 'stored' : 'DOM') + ')');
                             const zpl = generateNativeZPL(
                                 {
                                     productName: productInfo.productName,
@@ -224,20 +223,21 @@
                                     showBarcode: lc.label_show_barcode !== false,
                                 },
                                 {
-                                    printerName:  printerName,
-                                    labelWidthMm: lc.label_size_width || 33,
-                                    labelHeightMm:lc.label_size_height || 15,
-                                    columns:      lc.label_columns || 3,
+                                    printerName:   printerName,
+                                    labelWidthMm:  lc.label_size_width || 33,
+                                    labelHeightMm: lc.label_size_height || 15,
+                                    columns:       lc.label_columns || 3,
                                 }
                             );
 
-                            const result = await window.electronAPI.printReceipt({
-                                rawData:     zpl,
+                            // Use printLabel (not printReceipt) for label data
+                            const result = await window.electronAPI.printLabel({
+                                imageData:   zpl,
                                 printerName: printerName,
                                 isRaw:       true,
                             });
                             if (!result.success) throw new Error(result.error || 'ZPL print failed');
-                            continue; // Skip the image path
+                            continue;
                         }
                         console.warn('[Bridge] Zebra but no product data found, falling back to image path');
                     }
@@ -264,18 +264,21 @@
     // ── Expose globally ──────────────────────────────────────
     window.qz = fakeQZ;
 
-    // ── Webpack module patching (catches dynamically loaded chunks) ──
+    // ── Webpack module patching ───────────────────────────────
+    // Detect print-utility modules by exported function names, not by hardcoded chunk ID.
+    // Chunk IDs change on every frontend rebuild; this approach is rebuild-safe.
     function patchModule(exports) {
         if (!exports || exports.__bridgePatched) return;
         const origMultiCol = exports.printMultiColumnLabel;
         const origZPL      = exports.printZPLLabel;
         const origImage    = exports.printImageLabel;
 
+        if (!origMultiCol && !origZPL && !origImage) return;
+
         if (origMultiCol) {
             exports.printMultiColumnLabel = async function (labelData, printerOpts) {
                 if (isZebraPrinter(printerOpts.printerName)) {
-                    console.log('[Bridge] Intercepted printMultiColumnLabel → native ZPL');
-                    // Store the product data so qz.print can access it
+                    console.log('[Bridge] Intercepted printMultiColumnLabel -> native ZPL');
                     window.__lastLabelPrintRequest = {
                         productName: labelData.productName,
                         barcode:     labelData.barcode,
@@ -285,7 +288,6 @@
                         showPrice:   labelData.showPrice,
                         showBarcode: labelData.showBarcode,
                     };
-                    // Generate and send ZPL directly
                     const zpl = generateNativeZPL(labelData, printerOpts);
                     const cfg = fakeQZ.configs.create(printerOpts.printerName);
                     await fakeQZ.print(cfg, [{ type: 'raw', format: 'plain', data: zpl }]);
@@ -298,7 +300,7 @@
         if (origZPL) {
             exports.printZPLLabel = async function (labelData, printerOpts) {
                 if (isZebraPrinter(printerOpts.printerName)) {
-                    console.log('[Bridge] Intercepted printZPLLabel → native ZPL');
+                    console.log('[Bridge] Intercepted printZPLLabel -> native ZPL');
                     const zpl = generateNativeZPL(labelData, printerOpts);
                     const cfg = fakeQZ.configs.create(printerOpts.printerName);
                     await fakeQZ.print(cfg, [{ type: 'raw', format: 'plain', data: zpl }]);
@@ -311,7 +313,7 @@
         if (origImage) {
             exports.printImageLabel = async function (labelData, printerOpts) {
                 if (isZebraPrinter(printerOpts.printerName)) {
-                    console.log('[Bridge] Intercepted printImageLabel → native ZPL');
+                    console.log('[Bridge] Intercepted printImageLabel -> native ZPL');
                     const zpl = generateNativeZPL(labelData, printerOpts);
                     const cfg = fakeQZ.configs.create(printerOpts.printerName);
                     await fakeQZ.print(cfg, [{ type: 'raw', format: 'plain', data: zpl }]);
@@ -322,25 +324,34 @@
         }
 
         exports.__bridgePatched = true;
-        console.log('[Bridge] ✅ Patched qz-utils for Zebra native ZPL');
+        console.log('[Bridge] Patched qz-utils module for Zebra native ZPL');
     }
 
-    // Intercept webpack chunk pushes  
+    // Intercept webpack chunk pushes — scan all modules in each chunk by content
     if (!self.webpackChunk_N_E) self.webpackChunk_N_E = [];
     const origPush = self.webpackChunk_N_E.push.bind(self.webpackChunk_N_E);
     self.webpackChunk_N_E.push = function (...args) {
         const result = origPush(...args);
         for (const arg of args) {
-            if (arg && arg[1] && arg[1][21623]) {
-                const origFactory = arg[1][21623];
-                arg[1][21623] = function (module, exports, require) {
+            if (!arg || !arg[1]) continue;
+            for (const moduleId of Object.keys(arg[1])) {
+                const origFactory = arg[1][moduleId];
+                if (typeof origFactory !== 'function') continue;
+                arg[1][moduleId] = function (module, exports, require) {
                     origFactory(module, exports, require);
-                    patchModule(exports);
+                    // Only patch modules that export print utility functions
+                    if (exports && (
+                        typeof exports.printMultiColumnLabel === 'function' ||
+                        typeof exports.printZPLLabel === 'function' ||
+                        typeof exports.printImageLabel === 'function'
+                    )) {
+                        patchModule(exports);
+                    }
                 };
             }
         }
         return result;
     };
 
-    console.log('[Bridge] Ready. QZ Tray bypassed → Electron native printing.');
+    console.log('[Bridge] Ready. QZ Tray bypassed -> Electron native printing.');
 })();

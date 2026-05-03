@@ -7,16 +7,17 @@ Phone: 08112638350
 Website: https://aktech.co.id
 */
 
-import { app, BrowserWindow, ipcMain, shell, dialog, protocol, net } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, protocol, net, session } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as url from 'url';
-import { initSettingsStore, getSettings, setSettings } from './store/settings-store';
+import log from 'electron-log';
+import { initSettingsStore, getSettings, setSettings, getSetting } from './store/settings-store';
 import { PrinterManager } from './printer/printer-manager';
 import { sendRawToPrinter } from './printer/raw-printer';
 import { pngToZPL } from './printer/png-to-zpl';
 import { initAutoUpdater } from './updater/auto-updater';
-import { initTray } from './tray/tray-manager';
+import { initTray, destroyTray } from './tray/tray-manager';
 
 let mainWindow: BrowserWindow | null = null;
 let printerManager: PrinterManager | null = null;
@@ -58,7 +59,6 @@ function createMainWindow(): void {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: false,
-            webSecurity: false,
         },
         autoHideMenuBar: true,
         show: false,
@@ -78,7 +78,7 @@ function createMainWindow(): void {
     mainWindow.webContents.on('did-navigate', () => {
         if (bridgeScript) {
             mainWindow?.webContents.executeJavaScript(bridgeScript)
-                .catch((err: any) => console.error('Bridge injection error:', err));
+                .catch((err: any) => log.error('Bridge injection error:', err));
         }
     });
 
@@ -89,14 +89,14 @@ function createMainWindow(): void {
                 if (!window.qz || !window.qz.__electronBridge) {
                     ${bridgeScript}
                 }
-            `).catch((err: any) => console.error('Bridge fallback injection error:', err));
+            `).catch((err: any) => log.error('Bridge fallback injection error:', err));
         }
     });
 
-    // Forward renderer console messages to main process for debugging
+    // Forward renderer bridge/ZPL messages to log file for production debugging
     mainWindow.webContents.on('console-message', (_event, level, message) => {
         if (message.includes('[Bridge]') || message.includes('[ZPL]')) {
-            console.log(`[Renderer] ${message}`);
+            log.info(`[Renderer] ${message}`);
         }
     });
 
@@ -139,7 +139,7 @@ function createMainWindow(): void {
 // ============================================
 
 function registerIPCHandlers(): void {
-    printerManager = new PrinterManager();
+    printerManager = new PrinterManager(RENDERER_PATH);
 
     // --- Printer Handlers ---
     ipcMain.handle('printer:list', async () => {
@@ -163,13 +163,16 @@ function registerIPCHandlers(): void {
                 await sendRawToPrinter(data.printerName, data.rawData, 'RAW');
                 return { success: true };
             } else if (printerManager) {
-                // Structured ReceiptData — use the PrinterManager
+                // Inject receipt_footer from settings if caller didn't supply one
+                if (!data.receiptFooter) {
+                    data.receiptFooter = getSettings().receipt_footer;
+                }
                 await printerManager.printReceipt(mainWindow, data);
                 return { success: true };
             }
             return { success: false, error: 'No print handler available' };
         } catch (err: any) {
-            console.error('print:receipt error:', err);
+            log.error('print:receipt error:', err);
             return { success: false, error: err.message };
         }
     });
@@ -283,7 +286,7 @@ function registerIPCHandlers(): void {
             }
             return { success: false, error: 'No print handler available' };
         } catch (err: any) {
-            console.error('print:label error:', err);
+            log.error('print:label error:', err);
             return { success: false, error: err.message };
         }
     });
@@ -361,6 +364,26 @@ if (!gotLock) {
 }
 
 app.whenReady().then(async () => {
+    // Initialize settings before anything else (needed for api_endpoint)
+    initSettingsStore();
+
+    // CORS interceptor — allows app:// renderer to call the API without webSecurity: false
+    const apiEndpoint = getSetting('api_endpoint') || 'https://pos.aktech.co.id';
+    try {
+        const apiUrl = new URL(apiEndpoint);
+        const corsUrls = [`${apiUrl.protocol}//${apiUrl.host}/*`];
+        session.defaultSession.webRequest.onHeadersReceived({ urls: corsUrls }, (details, callback) => {
+            const headers: Record<string, string[]> = { ...details.responseHeaders as any };
+            headers['access-control-allow-origin'] = ['*'];
+            headers['access-control-allow-methods'] = ['GET, POST, PUT, DELETE, PATCH, OPTIONS'];
+            headers['access-control-allow-headers'] = ['Content-Type, Authorization, X-Requested-With'];
+            headers['access-control-allow-credentials'] = ['true'];
+            callback({ responseHeaders: headers });
+        });
+    } catch {
+        log.warn('[CORS] Invalid api_endpoint, skipping CORS interceptor');
+    }
+
     // Register custom protocol to serve renderer files
     // This allows absolute paths like /_next/static/... to work correctly
     protocol.handle('app', (request) => {
@@ -397,8 +420,7 @@ app.whenReady().then(async () => {
         return net.fetch(url.pathToFileURL(indexPath).toString());
     });
 
-    // Initialize
-    initSettingsStore();
+    // Settings already initialized above; register IPC handlers
     registerIPCHandlers();
 
     // Create window
@@ -428,6 +450,10 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();
     }
+});
+
+app.on('will-quit', () => {
+    destroyTray();
 });
 
 // Handle certificate errors for self-signed certs (dev)

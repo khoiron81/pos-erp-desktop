@@ -14,8 +14,9 @@ export function renderReceiptHTML(data: ReceiptData): string {
     const width = data.paperSize === '58mm' ? 32 : 48; // character width
     const pxWidth = data.paperSize === '58mm' ? 210 : 290;
 
-    const line = '─'.repeat(width);
-    const dblLine = '═'.repeat(width);
+    // Use ASCII separators — Unicode box-drawing chars may print as '?' on many thermal printers
+    const line = '-'.repeat(width);
+    const dblLine = '='.repeat(width);
 
     const formatCurrency = (n: number) =>
         'Rp ' + n.toLocaleString('id-ID');
@@ -74,11 +75,14 @@ export function renderReceiptHTML(data: ReceiptData): string {
         receipt += `<div class="small">Catatan: ${escHtml(data.notes)}</div>\n`;
     }
 
-    // Footer
+    // Footer — uses configurable lines from receiptFooter, falls back to defaults
+    const footerLines: string[] = data.receiptFooter && data.receiptFooter.length > 0
+        ? data.receiptFooter
+        : ['Terima kasih atas kunjungan Anda!', 'Barang yang sudah dibeli tidak dapat dikembalikan'];
     receipt += `<div class="line">${dblLine}</div>\n`;
-    receipt += `<div class="center small">Terima kasih atas kunjungan Anda!</div>\n`;
-    receipt += `<div class="center small">Barang yang sudah dibeli</div>\n`;
-    receipt += `<div class="center small">tidak dapat dikembalikan</div>\n`;
+    for (const line of footerLines) {
+        receipt += `<div class="center small">${escHtml(line)}</div>\n`;
+    }
     receipt += `<br><br><br>\n`; // Feed for auto-cut
 
     return `<!DOCTYPE html>

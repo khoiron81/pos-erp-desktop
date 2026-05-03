@@ -10,12 +10,18 @@ import type { LabelPrintData } from './types';
  * Render barcode labels as HTML for Electron native printing.
  * Generates rows × columns layout with barcodes using JsBarcode CDN.
  */
-export function renderLabelHTML(data: LabelPrintData): string {
+export interface LabelRenderOptions {
+    jsbarcodeScriptPath?: string;
+}
+
+export function renderLabelHTML(data: LabelPrintData, options?: LabelRenderOptions): string {
     const columns = data.columns || 3;
     const rows = data.quantity || 1;
     const gapMm = 2;
     const totalWidthMm = (data.labelWidthMm * columns) + (gapMm * (columns - 1));
     const isSmall = data.labelHeightMm <= 20;
+    const jsbarcodeScript = options?.jsbarcodeScriptPath
+        || 'https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js';
 
     // Generate label cell HTML
     const labelCell = `
@@ -41,13 +47,14 @@ export function renderLabelHTML(data: LabelPrintData): string {
 
     const nameFontSize = isSmall ? 8 : 10;
     const priceFontSize = isSmall ? 7 : 9;
-    const barcodeHeight = isSmall ? 25 : 35;
+    // Height in mm for print accuracy (not px which is screen-DPI-dependent)
+    const barcodeHeightMm = isSmall ? 6 : 9;
 
     return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
+<script src="${jsbarcodeScript}"></script>
 <style>
 @page {
     size: ${totalWidthMm}mm ${data.labelHeightMm}mm;
@@ -103,7 +110,7 @@ body {
 .barcode {
     display: block;
     max-width: ${data.labelWidthMm - 2}mm;
-    height: ${barcodeHeight}px;
+    height: ${barcodeHeightMm}mm;
 }
 .price {
     font-size: ${priceFontSize}pt;
@@ -118,10 +125,11 @@ ${rowsHTML}
 <script>
 document.querySelectorAll('.barcode').forEach(function(svg) {
     try {
+        // height is controlled by CSS (.barcode height in mm); use 100% here
         JsBarcode(svg, svg.getAttribute('data-barcode'), {
             format: 'CODE128',
             width: 1,
-            height: ${barcodeHeight},
+            height: 40,
             displayValue: true,
             fontSize: ${isSmall ? 7 : 10},
             margin: 0,

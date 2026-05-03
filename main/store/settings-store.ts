@@ -19,6 +19,7 @@ interface AppSettings {
     kiosk_mode: boolean;
     minimize_to_tray: boolean;
     theme: 'light' | 'dark' | 'system';
+    receipt_footer: string[];
 }
 
 const defaults: AppSettings = {
@@ -35,6 +36,10 @@ const defaults: AppSettings = {
     kiosk_mode: false,
     minimize_to_tray: false,
     theme: 'system',
+    receipt_footer: [
+        'Terima kasih atas kunjungan Anda!',
+        'Barang yang sudah dibeli tidak dapat dikembalikan',
+    ],
 };
 
 let store: any;
