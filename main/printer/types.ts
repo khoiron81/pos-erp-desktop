@@ -11,6 +11,7 @@ export interface PrinterInfo {
 }
 
 export interface ReceiptData {
+    receiptFooter?: string[];
     storeName: string;
     storeAddress?: string;
     storePhone?: string;

@@ -38,6 +38,19 @@ cd "$DESKTOP_DIR"
 npm install
 echo "✅ Dependencies installed"
 
+# Step 3b: Download jsbarcode for offline label printing
+echo ""
+echo "📥 Step 3b: Downloading jsbarcode for offline use..."
+JSBARCODE_URL="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"
+JSBARCODE_DEST="$DESKTOP_DIR/renderer/jsbarcode.min.js"
+if [ ! -f "$JSBARCODE_DEST" ]; then
+    curl -fsSL "$JSBARCODE_URL" -o "$JSBARCODE_DEST" \
+        && echo "✅ jsbarcode downloaded" \
+        || echo "⚠️  jsbarcode download failed — CDN fallback will be used"
+else
+    echo "✅ jsbarcode already present"
+fi
+
 # Step 4: Compile TypeScript
 echo ""
 echo "🔨 Step 4: Compiling Electron main process..."

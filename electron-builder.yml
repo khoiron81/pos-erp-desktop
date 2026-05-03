@@ -39,6 +39,8 @@ files:
   - node_modules/is-obj/**/*
   # electron-updater
   - node_modules/electron-updater/**/*
+  # electron-log
+  - node_modules/electron-log/**/*
 
 win:
   sign: false

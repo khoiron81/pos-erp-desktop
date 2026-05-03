@@ -4,10 +4,13 @@ Raw Printer Utility — Sends raw bytes (ZPL/ESC-POS) directly to Windows Print 
 Uses PowerShell + Win32 WritePrinter API
 */
 
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+const execAsync = promisify(exec);
 
 /**
  * Send raw data (ZPL, ESC/POS) directly to a Windows printer via the Print Spooler API.
@@ -118,12 +121,11 @@ public class RawPrint
     fs.writeFileSync(psFile, psScript, 'utf8');
 
     try {
-        const output = execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, {
-            timeout: 15000,
-            windowsHide: true,
-            encoding: 'utf8',
-        });
-        console.log('[RawPrinter]', output.trim());
+        const { stdout } = await execAsync(
+            `powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`,
+            { timeout: 15000, windowsHide: true } as any,
+        );
+        console.log('[RawPrinter]', stdout.trim());
     } catch (err: any) {
         const stderr = err.stderr?.toString() || err.message;
         throw new Error(`Raw print failed: ${stderr}`);

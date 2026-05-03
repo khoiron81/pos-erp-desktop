@@ -7,11 +7,16 @@ and raw ESC/POS for label printers.
 */
 
 import { BrowserWindow } from 'electron';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as url from 'url';
 import type { ReceiptData, LabelPrintData } from './types';
 import { renderReceiptHTML } from './escpos-renderer';
 import { renderLabelHTML } from './label-renderer';
 
 export class PrinterManager {
+    constructor(private rendererPath: string) {}
 
     // ============================================
     // RECEIPT PRINTING
@@ -72,14 +77,26 @@ export class PrinterManager {
      * Renders multi-column label rows as HTML, then prints.
      */
     async printLabel(parentWindow: BrowserWindow, data: LabelPrintData): Promise<void> {
-        const html = renderLabelHTML(data);
         const columns = data.columns || 3;
         const gapMm = 2;
         const totalWidthMm = (data.labelWidthMm * columns) + (gapMm * (columns - 1));
 
+        // Resolve local jsbarcode to avoid CDN dependency (offline-first)
+        const jsbarcodeLocal = path.join(this.rendererPath, 'jsbarcode.min.js');
+        const jsbarcodeScriptPath = fs.existsSync(jsbarcodeLocal)
+            ? url.pathToFileURL(jsbarcodeLocal).toString()
+            : undefined;
+
+        const html = renderLabelHTML(data, { jsbarcodeScriptPath });
+
+        // Write to a temp file served via app:// so relative asset paths resolve
+        const tmpFilename = `_label_tmp_${Date.now()}.html`;
+        const tmpHtmlPath = path.join(this.rendererPath, tmpFilename);
+        fs.writeFileSync(tmpHtmlPath, html, 'utf8');
+
         const printWindow = new BrowserWindow({
             show: false,
-            width: Math.round(totalWidthMm * 3.78), // mm to px at 96 DPI
+            width: Math.round(totalWidthMm * 3.78),
             height: Math.round(data.labelHeightMm * 3.78 * data.quantity),
             parent: parentWindow,
             webPreferences: {
@@ -88,34 +105,38 @@ export class PrinterManager {
             },
         });
 
-        await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+        try {
+            await printWindow.loadURL(`app://./${tmpFilename}`);
 
-        // Wait for fonts & barcode rendering
-        await new Promise((r) => setTimeout(r, 500));
+            // Wait for fonts & barcode rendering
+            await new Promise((r) => setTimeout(r, 500));
 
-        return new Promise<void>((resolve, reject) => {
-            printWindow.webContents.print(
-                {
-                    silent: true,
-                    printBackground: true,
-                    deviceName: data.printerName || undefined,
-                    margins: { marginType: 'none' },
-                    scaleFactor: 100,
-                    pageSize: {
-                        width: Math.round(totalWidthMm * 1000), // microns
-                        height: Math.round(data.labelHeightMm * 1000),
+            return await new Promise<void>((resolve, reject) => {
+                printWindow.webContents.print(
+                    {
+                        silent: true,
+                        printBackground: true,
+                        deviceName: data.printerName || undefined,
+                        margins: { marginType: 'none' },
+                        scaleFactor: 100,
+                        pageSize: {
+                            width: Math.round(totalWidthMm * 1000),
+                            height: Math.round(data.labelHeightMm * 1000),
+                        },
                     },
-                },
-                (success, failureReason) => {
-                    printWindow.close();
-                    console.log(`[PrinterManager] Label print result: ${success ? 'OK' : failureReason}`);
-                    if (success) {
-                        resolve();
-                    } else {
-                        reject(new Error(failureReason || 'Label print failed'));
+                    (success, failureReason) => {
+                        printWindow.close();
+                        console.log(`[PrinterManager] Label print result: ${success ? 'OK' : failureReason}`);
+                        if (success) {
+                            resolve();
+                        } else {
+                            reject(new Error(failureReason || 'Label print failed'));
+                        }
                     }
-                }
-            );
-        });
+                );
+            });
+        } finally {
+            try { fs.unlinkSync(tmpHtmlPath); } catch (_) {}
+        }
     }
 }
